@@ -47,6 +47,16 @@ TOOL_SPECS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="weather_forecast_for_datetime",
+        description="Get weather forecast for a specific date/time (nearest 3-hour slot, up to ~5 days).",
+        args_schema={
+            "city": "string, required. City name.",
+            "target_iso": "string, required. Target datetime in ISO format.",
+            "units": "string, optional. metric/imperial. Default metric.",
+            "lang": "string, optional. Response language. Default ru.",
+        },
+    ),
+    ToolSpec(
         name="tavily_search",
         description="Search web for fresh public information.",
         args_schema={
@@ -64,6 +74,17 @@ TOOL_SPECS: list[ToolSpec] = [
         description="Create a new task in Todoist.",
         args_schema={
             "content": "string, required. Task title.",
+            "due_string": "string, optional. Natural language due date.",
+            "due_date": "string, optional. Due date in YYYY-MM-DD.",
+            "description": "string, optional. Task description/details.",
+        },
+    ),
+    ToolSpec(
+        name="todoist_update_task",
+        description="Update existing Todoist task fields.",
+        args_schema={
+            "task_id": "string, required. Todoist task id.",
+            "content": "string, optional. New task title.",
             "due_string": "string, optional. Natural language due date.",
             "due_date": "string, optional. Due date in YYYY-MM-DD.",
             "description": "string, optional. Task description/details.",
@@ -102,6 +123,19 @@ TOOL_SPECS: list[ToolSpec] = [
             "summary": "string, required. Event title.",
             "start_iso": "string, required. ISO datetime start.",
             "end_iso": "string, required. ISO datetime end.",
+            "location": "string, optional. Event location.",
+        },
+    ),
+    ToolSpec(
+        name="calendar_update_event",
+        description="Update existing Google Calendar event fields.",
+        args_schema={
+            "event_id": "string, required. Existing event id.",
+            "summary": "string, optional. New title.",
+            "start_iso": "string, optional. New ISO datetime start.",
+            "end_iso": "string, optional. New ISO datetime end.",
+            "description": "string, optional. Event description.",
+            "location": "string, optional. Event location.",
         },
     ),
 ]
@@ -167,6 +201,24 @@ class AssistantAgent:
                 ensure_ascii=False,
             )
 
+        @tool("weather_forecast_for_datetime")
+        async def weather_forecast_for_datetime(
+            city: str,
+            target_iso: str,
+            units: str = "metric",
+            lang: str = "ru",
+        ) -> str:
+            """Get forecast nearest to target ISO datetime (OpenWeather 3-hour granularity)."""
+            return json.dumps(
+                await self.weather.weather_for_datetime(
+                    city=city,
+                    target_iso=target_iso,
+                    units=units,
+                    lang=lang,
+                ),
+                ensure_ascii=False,
+            )
+
         @tool("tavily_search")
         async def tavily_search(query: str, max_results: int = 5) -> str:
             """Search public web information via Tavily."""
@@ -188,6 +240,26 @@ class AssistantAgent:
             return json.dumps(
                 await self.todoist.create_task(
                     content=content,
+                    due_string=due_string or None,
+                    due_date=due_date or None,
+                    description=description or None,
+                ),
+                ensure_ascii=False,
+            )
+
+        @tool("todoist_update_task")
+        async def todoist_update_task(
+            task_id: str,
+            content: str = "",
+            due_string: str = "",
+            due_date: str = "",
+            description: str = "",
+        ) -> str:
+            """Update existing Todoist task."""
+            return json.dumps(
+                await self.todoist.update_task(
+                    task_id=task_id,
+                    content=content or None,
                     due_string=due_string or None,
                     due_date=due_date or None,
                     description=description or None,
@@ -225,10 +297,37 @@ class AssistantAgent:
             )
 
         @tool("calendar_create_event")
-        async def calendar_create_event(summary: str, start_iso: str, end_iso: str) -> str:
+        async def calendar_create_event(summary: str, start_iso: str, end_iso: str, location: str = "") -> str:
             """Create Google Calendar event from ISO datetime range."""
             return json.dumps(
-                await self.calendar.create_event(summary=summary, start_iso=start_iso, end_iso=end_iso),
+                await self.calendar.create_event(
+                    summary=summary,
+                    start_iso=start_iso,
+                    end_iso=end_iso,
+                    location=location or None,
+                ),
+                ensure_ascii=False,
+            )
+
+        @tool("calendar_update_event")
+        async def calendar_update_event(
+            event_id: str,
+            summary: str = "",
+            start_iso: str = "",
+            end_iso: str = "",
+            description: str = "",
+            location: str = "",
+        ) -> str:
+            """Update existing Google Calendar event."""
+            return json.dumps(
+                await self.calendar.update_event(
+                    event_id=event_id,
+                    summary=summary or None,
+                    start_iso=start_iso or None,
+                    end_iso=end_iso or None,
+                    description=description or None,
+                    location=location or None,
+                ),
                 ensure_ascii=False,
             )
 
@@ -236,13 +335,16 @@ class AssistantAgent:
             "notion_search": notion_search,
             "notion_create_note": notion_create_note,
             "weather_current_weather": weather_current_weather,
+            "weather_forecast_for_datetime": weather_forecast_for_datetime,
             "tavily_search": tavily_search,
             "todoist_list_tasks": todoist_list_tasks,
             "todoist_create_task": todoist_create_task,
+            "todoist_update_task": todoist_update_task,
             "gmail_list_messages": gmail_list_messages,
             "gmail_send_message": gmail_send_message,
             "calendar_list_events": calendar_list_events,
             "calendar_create_event": calendar_create_event,
+            "calendar_update_event": calendar_update_event,
         }
 
     @staticmethod
@@ -252,7 +354,11 @@ class AssistantAgent:
                 "name": "research-agent",
                 "description": "Research internet and knowledge base for additional context.",
                 "system_prompt": "You are a research specialist. Focus on concise facts and sources.",
-                "tools": [tools["tavily_search"], tools["notion_search"], tools["notion_create_note"]],
+                "tools": [
+                    tools["tavily_search"],
+                    tools["notion_search"],
+                    tools["notion_create_note"],
+                ],
             },
             {
                 "name": "mail-agent",
@@ -267,15 +373,17 @@ class AssistantAgent:
                 "tools": [
                     tools["calendar_list_events"],
                     tools["calendar_create_event"],
+                    tools["calendar_update_event"],
                     tools["todoist_list_tasks"],
                     tools["todoist_create_task"],
+                    tools["todoist_update_task"],
                 ],
             },
             {
                 "name": "weather-agent",
                 "description": "Analyze weather impact on schedule.",
                 "system_prompt": "You evaluate weather risks and propose plan adjustments.",
-                "tools": [tools["weather_current_weather"]],
+                "tools": [tools["weather_current_weather"], tools["weather_forecast_for_datetime"]],
             },
         ]
 

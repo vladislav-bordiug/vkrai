@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     gmail_base_url: str = "https://gmail.googleapis.com/gmail/v1"
 
     google_calendar_base_url: str = "https://www.googleapis.com/calendar/v3"
+    google_calendar_default_timezone: str = "Europe/Moscow"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

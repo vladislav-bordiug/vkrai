@@ -29,3 +29,27 @@ class TodoistTool:
         if due_date:
             payload["due_date"] = due_date
         return await self.http.post(f"{self.base_url}/tasks", headers=headers, json_body=payload)
+
+    async def update_task(
+        self,
+        task_id: str,
+        content: str | None = None,
+        due_string: str | None = None,
+        due_date: str | None = None,
+        description: str | None = None,
+    ) -> dict:
+        headers = {"Authorization": f"Bearer {settings.todoist_api_key}", "Content-Type": "application/json"}
+        payload: dict[str, str] = {}
+        if content:
+            payload["content"] = content
+        if description is not None:
+            payload["description"] = description
+        if due_string:
+            payload["due_string"] = due_string
+        if due_date:
+            payload["due_date"] = due_date
+
+        if not payload:
+            raise ValueError("At least one editable field must be provided for Todoist task update.")
+
+        return await self.http.post(f"{self.base_url}/tasks/{task_id}", headers=headers, json_body=payload)
