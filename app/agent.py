@@ -1,151 +1,78 @@
 from __future__ import annotations
 
-import json
+import importlib
 import inspect
+import logging
 from dataclasses import dataclass
+from functools import wraps
+from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
-from langchain_core.tools import tool
+
 from app.config import settings
-from app.integrations.calendar import GoogleCalendarTool
-from app.integrations.gmail import GmailTool
-from app.integrations.notion import NotionTool
-from app.integrations.tavily import TavilyTool
-from app.integrations.todoist import TodoistTool
-from app.integrations.weather import OpenWeatherTool
+
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
-    description: str
-    args_schema: dict[str, str]
+    docstring: str
 
 
-TOOL_SPECS: list[ToolSpec] = [
-    ToolSpec(
-        name="notion_search",
-        description="Search notes, documents and knowledge base in Notion workspace.",
-        args_schema={"query": "string, required. Search text."},
-    ),
-    ToolSpec(
-        name="notion_create_note",
-        description="Create a quick note page in Notion from plain text content.",
-        args_schema={
-            "content": "string, required. Note body text.",
-        },
-    ),
-    ToolSpec(
-        name="weather_current_weather",
-        description="Get current weather in a specific city for planning decisions.",
-        args_schema={
-            "city": "string, required. City name.",
-            "units": "string, optional. metric/imperial. Default metric.",
-            "lang": "string, optional. Response language. Default ru.",
-        },
-    ),
-    ToolSpec(
-        name="weather_forecast_for_datetime",
-        description="Get weather forecast for a specific date/time (nearest 3-hour slot, up to ~5 days).",
-        args_schema={
-            "city": "string, required. City name.",
-            "target_iso": "string, required. Target datetime in ISO format.",
-            "units": "string, optional. metric/imperial. Default metric.",
-            "lang": "string, optional. Response language. Default ru.",
-        },
-    ),
-    ToolSpec(
-        name="tavily_search",
-        description="Search web for fresh public information.",
-        args_schema={
-            "query": "string, required. What to search on the web.",
-            "max_results": "integer, optional. Default 5.",
-        },
-    ),
-    ToolSpec(
-        name="todoist_list_tasks",
-        description="List current Todoist tasks.",
-        args_schema={},
-    ),
-    ToolSpec(
-        name="todoist_create_task",
-        description="Create a new task in Todoist.",
-        args_schema={
-            "content": "string, required. Task title.",
-            "due_string": "string, optional. Natural language due date.",
-            "due_date": "string, optional. Due date in YYYY-MM-DD.",
-            "description": "string, optional. Task description/details.",
-        },
-    ),
-    ToolSpec(
-        name="todoist_update_task",
-        description="Update existing Todoist task fields.",
-        args_schema={
-            "task_id": "string, required. Todoist task id.",
-            "content": "string, optional. New task title.",
-            "due_string": "string, optional. Natural language due date.",
-            "due_date": "string, optional. Due date in YYYY-MM-DD.",
-            "description": "string, optional. Task description/details.",
-        },
-    ),
-    ToolSpec(
-        name="gmail_list_messages",
-        description="List Gmail messages by query filter.",
-        args_schema={
-            "query": "string, optional. Gmail search query.",
-            "max_results": "integer, optional. Default 10.",
-        },
-    ),
-    ToolSpec(
-        name="gmail_send_message",
-        description="Send Gmail message from structured fields; backend builds RFC2822/base64 payload internally.",
-        args_schema={
-            "to_email": "string, required. Recipient email.",
-            "subject": "string, required. Email subject.",
-            "body": "string, required. Plain text body.",
-            "from_email": "string, required. Sender email used in From header.",
-        },
-    ),
-    ToolSpec(
-        name="calendar_list_events",
-        description="List upcoming Google Calendar events.",
-        args_schema={
-            "max_results": "integer, optional. Default 10.",
-            "include_past": "boolean, optional. Default false (only upcoming events).",
-        },
-    ),
-    ToolSpec(
-        name="calendar_create_event",
-        description="Create Google Calendar event with ISO datetimes.",
-        args_schema={
-            "summary": "string, required. Event title.",
-            "start_iso": "string, required. ISO datetime start.",
-            "end_iso": "string, required. ISO datetime end.",
-            "location": "string, optional. Event location.",
-        },
-    ),
-    ToolSpec(
-        name="calendar_update_event",
-        description="Update existing Google Calendar event fields.",
-        args_schema={
-            "event_id": "string, required. Existing event id.",
-            "summary": "string, optional. New title.",
-            "start_iso": "string, optional. New ISO datetime start.",
-            "end_iso": "string, optional. New ISO datetime end.",
-            "description": "string, optional. Event description.",
-            "location": "string, optional. Event location.",
-        },
-    ),
-]
+INTEGRATIONS_PACKAGE = "app.integrations"
+INTEGRATIONS_DIR = Path(__file__).parent / "integrations"
 
 
-def build_system_prompt() -> str:
-    tools_block = []
-    for idx, spec in enumerate(TOOL_SPECS, start=1):
-        args_str = json.dumps(spec.args_schema, ensure_ascii=False)
-        tools_block.append(f"{idx}. {spec.name}: {spec.description}; args={args_str}")
+def parse_tool_spec(func) -> ToolSpec:
+    doc = inspect.getdoc(func) or ""
+    cleaned_doc = "\n".join(line.rstrip() for line in doc.splitlines()) if doc else ""
+    if not cleaned_doc:
+        cleaned_doc = f"{func.__name__}: No description"
+    return ToolSpec(name=func.__name__, docstring=cleaned_doc)
+
+
+def discover_tools_and_specs() -> tuple[list[Any], list[ToolSpec]]:
+    tools: list[Any] = []
+    specs: list[ToolSpec] = []
+
+    if not INTEGRATIONS_DIR.exists():
+        logger.warning("Integrations directory not found: %s", INTEGRATIONS_DIR)
+        return tools, specs
+
+    for path in sorted(INTEGRATIONS_DIR.glob("*.py")):
+        if path.name.startswith("__"):
+            continue
+
+        module_name = f"{INTEGRATIONS_PACKAGE}.{path.stem}"
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            logger.exception("Failed to import module %s", module_name)
+            continue
+
+        for _, func in inspect.getmembers(module, inspect.isfunction):
+            if not func.__name__.startswith("tool_"):
+                continue
+
+            tools.append(func)
+            specs.append(parse_tool_spec(func))
+            logger.info("Discovered tool %s from %s", func.__name__, module_name)
+
+    return tools, specs
+
+
+def build_system_prompt(tool_specs: list[ToolSpec]) -> str:
+    tools_block = [spec.docstring for spec in tool_specs]
 
     return (
         "You are a local AI assistant orchestrator inspired by deepagents.\n"
@@ -153,241 +80,74 @@ def build_system_prompt() -> str:
         "For each user request, choose tools by their description and args schema, call them when needed, then produce the final user-facing reply.\n"
         "Never output planning JSON, tool call plans, or internal chain-of-thought.\n"
         "Always return a plain, concise final answer for the user in Russian.\n\n"
-        "Tool Registry:\n"
-        + "\n".join(tools_block)
+        "Tool Registry:\n" + "\n\n".join(tools_block)
     ).strip()
 
 
-SYSTEM_PROMPT = build_system_prompt()
+TOOLS, TOOL_SPECS = discover_tools_and_specs()
+
+
+def _wrap_tool_with_logging(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            logger.info("Tool call: %s args=%s kwargs=%s", func.__name__, args, kwargs)
+            try:
+                result = await func(*args, **kwargs)
+                logger.info("Tool result: %s -> %s", func.__name__, str(result)[:1000])
+                return result
+            except Exception:
+                logger.exception("Tool error: %s", func.__name__)
+                raise
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        logger.info("Tool call: %s args=%s kwargs=%s", func.__name__, args, kwargs)
+        try:
+            result = func(*args, **kwargs)
+            logger.info("Tool result: %s -> %s", func.__name__, str(result)[:1000])
+            return result
+        except Exception:
+            logger.exception("Tool error: %s", func.__name__)
+            raise
+
+    return sync_wrapper
+
+
+LOGGED_TOOLS = [_wrap_tool_with_logging(tool) for tool in TOOLS]
+SYSTEM_PROMPT = build_system_prompt(TOOL_SPECS)
 
 
 class AssistantAgent:
     def __init__(self):
-        self.notion = NotionTool()
-        self.weather = OpenWeatherTool()
-        self.tavily = TavilyTool()
-        self.todoist = TodoistTool()
-        self.gmail = GmailTool()
-        self.calendar = GoogleCalendarTool()
-
-        model_name = settings.openai_model if ":" in settings.openai_model else f"openai:{settings.openai_model}"
-        tools = self._build_deepagents_tools()
+        model_name = (
+            settings.openai_model
+            if ":" in settings.openai_model
+            else f"openai:{settings.openai_model}"
+        )
+        self.tools = LOGGED_TOOLS
+        self.tool_specs = TOOL_SPECS
+        logger.info(
+            "AssistantAgent initialized with %d tools: %s",
+            len(self.tools),
+            [tool.__name__ for tool in self.tools],
+        )
+        logger.info("AssistantAgent system prompt: %s", SYSTEM_PROMPT)
         self.deep_agent = create_deep_agent(
             model=init_chat_model(model_name),
-            tools=list(tools.values()),
-            subagents=self._build_subagents(tools),
+            tools=self.tools,
             system_prompt=SYSTEM_PROMPT,
         )
 
-    def _build_deepagents_tools(self):
-        @tool("notion_search")
-        async def notion_search(query: str) -> str:
-            """Search notes/documents in Notion knowledge base by query."""
-            return json.dumps(await self.notion.search(query=query), ensure_ascii=False)
-
-        @tool("notion_create_note")
-        async def notion_create_note(content: str) -> str:
-            """Create a quick Notion note page from plain text."""
-            return json.dumps(
-                await self.notion.create_note(content=content),
-                ensure_ascii=False,
-            )
-
-        @tool("weather_current_weather")
-        async def weather_current_weather(city: str, units: str = "metric", lang: str = "ru") -> str:
-            """Get current weather in city for planning decisions."""
-            return json.dumps(
-                await self.weather.current_weather(city=city, units=units, lang=lang),
-                ensure_ascii=False,
-            )
-
-        @tool("weather_forecast_for_datetime")
-        async def weather_forecast_for_datetime(
-            city: str,
-            target_iso: str,
-            units: str = "metric",
-            lang: str = "ru",
-        ) -> str:
-            """Get forecast nearest to target ISO datetime (OpenWeather 3-hour granularity)."""
-            return json.dumps(
-                await self.weather.weather_for_datetime(
-                    city=city,
-                    target_iso=target_iso,
-                    units=units,
-                    lang=lang,
-                ),
-                ensure_ascii=False,
-            )
-
-        @tool("tavily_search")
-        async def tavily_search(query: str, max_results: int = 5) -> str:
-            """Search public web information via Tavily."""
-            return json.dumps(await self.tavily.search(query=query, max_results=max_results), ensure_ascii=False)
-
-        @tool("todoist_list_tasks")
-        async def todoist_list_tasks() -> str:
-            """List Todoist tasks."""
-            return json.dumps(await self.todoist.list_tasks(), ensure_ascii=False)
-
-        @tool("todoist_create_task")
-        async def todoist_create_task(
-            content: str,
-            due_string: str = "",
-            due_date: str = "",
-            description: str = "",
-        ) -> str:
-            """Create Todoist task with optional due date and description."""
-            return json.dumps(
-                await self.todoist.create_task(
-                    content=content,
-                    due_string=due_string or None,
-                    due_date=due_date or None,
-                    description=description or None,
-                ),
-                ensure_ascii=False,
-            )
-
-        @tool("todoist_update_task")
-        async def todoist_update_task(
-            task_id: str,
-            content: str = "",
-            due_string: str = "",
-            due_date: str = "",
-            description: str = "",
-        ) -> str:
-            """Update existing Todoist task."""
-            return json.dumps(
-                await self.todoist.update_task(
-                    task_id=task_id,
-                    content=content or None,
-                    due_string=due_string or None,
-                    due_date=due_date or None,
-                    description=description or None,
-                ),
-                ensure_ascii=False,
-            )
-
-        @tool("gmail_list_messages")
-        async def gmail_list_messages(query: str = "", max_results: int = 10) -> str:
-            """List Gmail messages by query."""
-            return json.dumps(
-                await self.gmail.list_messages(query=query or None, max_results=max_results),
-                ensure_ascii=False,
-            )
-
-        @tool("gmail_send_message")
-        async def gmail_send_message(to_email: str, subject: str, body: str, from_email: str) -> str:
-            """Send Gmail message from structured fields; MIME/base64 payload is built in backend."""
-            return json.dumps(
-                await self.gmail.send_message(
-                    to_email=to_email,
-                    subject=subject,
-                    body=body,
-                    from_email=from_email,
-                ),
-                ensure_ascii=False,
-            )
-
-        @tool("calendar_list_events")
-        async def calendar_list_events(max_results: int = 10, include_past: bool = False) -> str:
-            """List upcoming Google Calendar events."""
-            return json.dumps(
-                await self.calendar.list_events(max_results=max_results, include_past=include_past),
-                ensure_ascii=False,
-            )
-
-        @tool("calendar_create_event")
-        async def calendar_create_event(summary: str, start_iso: str, end_iso: str, location: str = "") -> str:
-            """Create Google Calendar event from ISO datetime range."""
-            return json.dumps(
-                await self.calendar.create_event(
-                    summary=summary,
-                    start_iso=start_iso,
-                    end_iso=end_iso,
-                    location=location or None,
-                ),
-                ensure_ascii=False,
-            )
-
-        @tool("calendar_update_event")
-        async def calendar_update_event(
-            event_id: str,
-            summary: str = "",
-            start_iso: str = "",
-            end_iso: str = "",
-            description: str = "",
-            location: str = "",
-        ) -> str:
-            """Update existing Google Calendar event."""
-            return json.dumps(
-                await self.calendar.update_event(
-                    event_id=event_id,
-                    summary=summary or None,
-                    start_iso=start_iso or None,
-                    end_iso=end_iso or None,
-                    description=description or None,
-                    location=location or None,
-                ),
-                ensure_ascii=False,
-            )
-
-        return {
-            "notion_search": notion_search,
-            "notion_create_note": notion_create_note,
-            "weather_current_weather": weather_current_weather,
-            "weather_forecast_for_datetime": weather_forecast_for_datetime,
-            "tavily_search": tavily_search,
-            "todoist_list_tasks": todoist_list_tasks,
-            "todoist_create_task": todoist_create_task,
-            "todoist_update_task": todoist_update_task,
-            "gmail_list_messages": gmail_list_messages,
-            "gmail_send_message": gmail_send_message,
-            "calendar_list_events": calendar_list_events,
-            "calendar_create_event": calendar_create_event,
-            "calendar_update_event": calendar_update_event,
-        }
-
-    @staticmethod
-    def _build_subagents(tools: dict[str, Any]) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": "research-agent",
-                "description": "Research internet and knowledge base for additional context.",
-                "system_prompt": "You are a research specialist. Focus on concise facts and sources.",
-                "tools": [
-                    tools["tavily_search"],
-                    tools["notion_search"],
-                    tools["notion_create_note"],
-                ],
-            },
-            {
-                "name": "mail-agent",
-                "description": "Handle email checks and message operations.",
-                "system_prompt": "You are an email operations specialist. Extract actionable items from emails.",
-                "tools": [tools["gmail_list_messages"], tools["gmail_send_message"]],
-            },
-            {
-                "name": "planning-agent",
-                "description": "Create calendar events and task plans.",
-                "system_prompt": "You are a planning assistant. Convert intent into tasks and events.",
-                "tools": [
-                    tools["calendar_list_events"],
-                    tools["calendar_create_event"],
-                    tools["calendar_update_event"],
-                    tools["todoist_list_tasks"],
-                    tools["todoist_create_task"],
-                    tools["todoist_update_task"],
-                ],
-            },
-            {
-                "name": "weather-agent",
-                "description": "Analyze weather impact on schedule.",
-                "system_prompt": "You evaluate weather risks and propose plan adjustments.",
-                "tools": [tools["weather_current_weather"], tools["weather_forecast_for_datetime"]],
-            },
-        ]
-
-    async def run(self, user_message: str, history: list[dict[str, str]]) -> tuple[str, list[dict[str, Any]]]:
+    async def run(
+        self, user_message: str, history: list[dict[str, str]]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        logger.info(
+            "User request: %s | history_len=%d", user_message, len(history or [])
+        )
         payload_messages: list[dict[str, str]] = [
             {"role": msg.get("role", "user"), "content": msg.get("content", "")}
             for msg in history
@@ -395,7 +155,10 @@ class AssistantAgent:
         ]
         payload_messages.append({"role": "user", "content": user_message})
 
+        logger.info("LLM request payload: %s", payload_messages)
+
         result = await self._invoke_deep_agent(payload_messages)
+        logger.info("LLM response payload: %s", result)
         answer = self._extract_answer(result)
         trace = self._extract_tool_trace(result)
         return answer, trace
@@ -461,7 +224,9 @@ class AssistantAgent:
                         chunks.append(part["text"])
                     elif isinstance(part.get("content"), str):
                         chunks.append(part["content"])
-            joined = "\n".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
+            joined = "\n".join(
+                chunk.strip() for chunk in chunks if chunk and chunk.strip()
+            )
             return joined or None
 
         return None
@@ -473,7 +238,9 @@ class AssistantAgent:
             messages = payload["messages"]
         elif isinstance(payload, list):
             messages = payload
-        elif hasattr(payload, "messages") and isinstance(getattr(payload, "messages"), list):
+        elif hasattr(payload, "messages") and isinstance(
+            getattr(payload, "messages"), list
+        ):
             messages = getattr(payload, "messages")
 
         trace: list[dict[str, Any]] = []
@@ -486,8 +253,12 @@ class AssistantAgent:
                             trace.append(
                                 {
                                     "phase": "call",
-                                    "tool": call.get("name") or call.get("tool") or "unknown",
-                                    "args": call.get("args") or call.get("arguments") or {},
+                                    "tool": call.get("name")
+                                    or call.get("tool")
+                                    or "unknown",
+                                    "args": call.get("args")
+                                    or call.get("arguments")
+                                    or {},
                                 }
                             )
 
@@ -509,7 +280,9 @@ class AssistantAgent:
                         trace.append(
                             {
                                 "phase": "call",
-                                "tool": call.get("name") or call.get("tool") or "unknown",
+                                "tool": call.get("name")
+                                or call.get("tool")
+                                or "unknown",
                                 "args": call.get("args") or call.get("arguments") or {},
                             }
                         )
@@ -519,10 +292,11 @@ class AssistantAgent:
                 trace.append(
                     {
                         "phase": "result",
-                        "tool": getattr(msg, "name", None) or getattr(msg, "tool_name", None) or "tool",
+                        "tool": getattr(msg, "name", None)
+                        or getattr(msg, "tool_name", None)
+                        or "tool",
                         "content": str(getattr(msg, "content", ""))[:2000],
                     }
                 )
 
         return trace
-
