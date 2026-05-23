@@ -107,8 +107,6 @@ docker compose down
 - обновляет access token через `https://oauth2.googleapis.com/token`
 - применяет токен для Gmail/Calendar запросов
 
-Код обновления токена: [`GoogleOAuthClient`](app/integrations/google_oauth.py:13)
-
 ### .env
 
 Все нужные переменные в [`.env.example`](.env.example):
@@ -117,10 +115,6 @@ docker compose down
 2. `GOOGLE_CLIENT_SECRET`
 3. `GOOGLE_REFRESH_TOKEN`
 4. `GOOGLE_TOKEN_URL` (не менять)
-
-### Notion: создание заметок
-
-- Для создания заметки через [`notion_create_note`](app/agent.py:145) достаточно передать только `content`.
 
 ### Как получить client_id/client_secret/refresh_token
 
@@ -176,7 +170,7 @@ docker compose down
 - В `docker-compose` используется сервис `postgres` с БД/пользователем `assistant`.
 - Backend подключается по URL:
   `postgresql+asyncpg://assistant:assistant@postgres:5432/assistant`
-- Для локального запуска вне Docker настрой `DATABASE_URL` в [`.env.example`](.env.example).
+- Для локального запуска вне Docker настройте `DATABASE_URL` в [`.env.example`](.env.example).
 
 ## Источники API
 
