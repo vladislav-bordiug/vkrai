@@ -131,6 +131,11 @@ class AssistantAgent:
             [tool.__name__ for tool in self.tools],
         )
         logger.info("AssistantAgent system prompt: %s", SYSTEM_PROMPT)
+        logger.info(
+            "AssistantAgent initialized with model %s from OpenAI-compatible API %s",
+            settings.ai_model,
+            settings.ai_base_url,
+        )
         self.deep_agent = create_deep_agent(
             model=ChatOpenAI(
                 model=settings.ai_model,
