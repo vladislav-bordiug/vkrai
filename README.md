@@ -17,7 +17,7 @@
 - Python 3.11+
 - FastAPI + Uvicorn
 - SQLAlchemy Async (PostgreSQL + asyncpg)
-- OpenAI API (модель задается через `OPENAI_MODEL`, можно поставить семейство GPT-5)
+- OpenAI compatible API (модель задается через `AI_MODEL`, URL api через `AI_BASE_URL`, можно поставить любую модель из любого OpenAI-compatible API - deepseek, chatgpt, claude)
 - deepagents (подключен зависимостью)
 
 ## Структура
@@ -146,40 +146,21 @@ docker compose down
 
 ## Как агент понимает, какой тул вызывать
 
-- В агенте добавлен явный реестр инструментов с описаниями и схемами аргументов: [`TOOL_SPECS`](app/agent.py:24).
-- Системный промпт для планирования собирается из этого реестра: [`build_system_prompt()`](app/agent.py:91).
+- У каждой тулы можно прописать описание.
+- Системный промпт для планирования собирается из этих описаний.
 - Это дает LLM контекст «когда и зачем вызывать каждый тул» и уменьшает случайные вызовы не того инструмента.
-
-### Gmail отправка (новый формат аргументов)
-
-- Для отправки письма агент передает только структурированные поля в [`gmail_send_message`](app/agent.py:178):
-  - `to_email`
-  - `subject`
-  - `body`
-  - `from_email`
-- Сборка RFC2822 + base64url выполняется внутри backend в [`GmailTool._build_raw_message()`](app/integrations/gmail.py:50).
-- Отправка в Gmail API выполняется через [`GmailTool.send_message()`](app/integrations/gmail.py:25), где raw payload формируется автоматически.
 
 ## Использование deepagents
 
-- Агент создается напрямую через deepagents API: [`create_deep_agent(...)`](app/agent.py:124).
-- Модель инициализируется через LangChain: [`init_chat_model(...)`](app/agent.py:123).
-- Тулы передаются в deepagents как список LangChain tools: [`_build_deepagents_tools()`](app/agent.py:130).
-- Вызов генерации выполняется через deepagents invoke/ainvoke: [`_invoke_deep_agent()`](app/agent.py:225).
-
-### Оркестрация через subagents
-
-- Основной deepagents-агент теперь получает набор специализированных subagents: [`_build_subagents()`](app/agent.py:201).
-- Примеры ролей:
-  - `research-agent` (поиск и knowledge tools)
-  - `mail-agent` (почтовые операции)
-  - `planning-agent` (календарь и задачи)
-  - `weather-agent` (погодные корректировки)
+- Агент создается напрямую через deepagents API.
+- Модель инициализируется через LangChain.
+- Тулы передаются в deepagents как список LangChain tools.
+- Вызов генерации выполняется через deepagents invoke/ainvoke.
 
 ### Формат ответа deepagents
 
 - Ответ deepagents может приходить строкой, dict-структурой или сообщением (Message-объект).
-- Нормализация выполняется в [`_extract_answer()`](app/agent.py:236) и [`_extract_text_block()`](app/agent.py:243), чтобы стабильно извлекать финальный текст.
+- Выполняется нормализация, чтобы стабильно извлекать финальный текст.
 
 ## Важно
 
@@ -187,7 +168,7 @@ docker compose down
 - Полный проект поднимается через `docker-compose.yml` как 3 сервиса: `postgres`, `backend`, `frontend`.
 - CORS backend настраивается через `CORS_ORIGINS`.
 - Для Gmail/Google Calendar нужны валидные Google OAuth2 client credentials + refresh token.
-- Для deepagents нужен валидный ключ провайдера модели (в текущем проекте используется `OPENAI_API_KEY` и `OPENAI_MODEL`).
+- Для deepagents нужен валидный ключ провайдера модели (в текущем проекте используется `AI_API_KEY`, `AI_BASE_URL` и `AI_MODEL`).
 - Текущий цикл: deepagents plan -> tool calls -> deepagents summary.
 
 ## PostgreSQL конфигурация

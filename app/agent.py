@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from deepagents import create_deep_agent
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 
 from app.config import settings
 
@@ -123,11 +123,6 @@ SYSTEM_PROMPT = build_system_prompt(TOOL_SPECS)
 
 class AssistantAgent:
     def __init__(self):
-        model_name = (
-            settings.openai_model
-            if ":" in settings.openai_model
-            else f"openai:{settings.openai_model}"
-        )
         self.tools = LOGGED_TOOLS
         self.tool_specs = TOOL_SPECS
         logger.info(
@@ -137,7 +132,11 @@ class AssistantAgent:
         )
         logger.info("AssistantAgent system prompt: %s", SYSTEM_PROMPT)
         self.deep_agent = create_deep_agent(
-            model=init_chat_model(model_name),
+            model=ChatOpenAI(
+                model=settings.ai_model,
+                api_key=settings.ai_api_key,
+                base_url=settings.ai_base_url,
+            ),
             tools=self.tools,
             system_prompt=SYSTEM_PROMPT,
         )
